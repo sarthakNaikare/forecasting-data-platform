@@ -1,0 +1,12 @@
+forecaster_id,years_forecasting_experience,education_level,country,affiliation,joined_date
+F001,8,PhD,United States,University of Atlantis,2022-06-15
+F002,5,Masters,United Kingdom,Bigfoot Institute of Technology,2023-01-20
+F003,12,PhD,Italy,Loch Ness Academy,2021-09-01
+F004,3,Bachelor,South Korea,Yeti Analytics,2023-08-10
+F005,4,Masters,Mexico,Narwhal University,2023-03-15
+F006,6,Bachelors,Ireland,Sasquatch Consulting,"March 15, 2023"
+F007,2,,Japan,,2024-01-10
+F008,10,PhD,UAE,Bermuda Triangle Polytechnic,2022-03-01
+F009,7,Masters,Sweden,Mothman School of Sciences,2022-11-15
+F010,9,PhD,United States,Chupacabra Research Institute,2021-05-20
+F099,3,Bachelors,Canada,Unicorn College,2024-02-28
