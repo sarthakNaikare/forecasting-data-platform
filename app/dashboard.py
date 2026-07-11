@@ -1,6 +1,3 @@
-"""
-FRI Forecasting Data Platform - Analytics Dashboard
-"""
 import streamlit as st
 import duckdb
 import plotly.express as px
@@ -12,423 +9,485 @@ st.set_page_config(
     page_title="FRI Forecasting Platform",
     page_icon="🔭",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-GREEN_DEEP   = "#102B23"
-GREEN_MID    = "#1a4235"
-GREEN_LIGHT  = "#2d6a4f"
-GREEN_ACCENT = "#52b788"
-GREEN_PALE   = "#d8f3dc"
-AMBER        = "#e9c46a"
-RED_SOFT     = "#e76f51"
+G1 = "#102B23"
+G2 = "#1a4235"
+G3 = "#2d6a4f"
+G4 = "#52b788"
+G5 = "#d8f3dc"
+AMBER = "#e9c46a"
+RED = "#e76f51"
+TC = {"superforecaster": G1, "expert": G2, "public": G4}
 
-TYPE_COLORS = {
-    "superforecaster": GREEN_DEEP,
-    "expert":          GREEN_MID,
-    "public":          GREEN_ACCENT,
-}
-
-st.markdown(f"""
+st.markdown("""
 <style>
-[data-testid="stSidebar"] {{ background: {GREEN_DEEP}; }}
-[data-testid="stSidebar"] * {{ color: white !important; }}
-.metric-card {{
-    background: white; border-radius: 10px; padding: 20px 24px;
-    box-shadow: 0 2px 12px rgba(16,43,35,0.08); text-align: center;
-    border-top: 3px solid {GREEN_ACCENT};
-}}
-.metric-value {{ font-size: 2.2rem; font-weight: 700; color: {GREEN_DEEP}; line-height: 1; }}
-.metric-label {{ font-size: 0.75rem; color: #7a7a7a; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.05em; }}
-.insight-box {{
-    background: {GREEN_PALE}; border-left: 3px solid {GREEN_ACCENT};
-    padding: 10px 14px; border-radius: 4px; font-size: 0.85rem;
-    color: {GREEN_MID}; font-style: italic; margin-bottom: 16px;
-}}
-.section-title {{ font-size: 1.1rem; font-weight: 600; color: {GREEN_DEEP}; margin-bottom: 4px; }}
-.section-sub {{ font-size: 0.82rem; color: #7a7a7a; margin-bottom: 16px; }}
+[data-testid="stSidebar"] {background:#102B23}
+[data-testid="stSidebar"] * {color:white!important}
+.mc{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 12px rgba(16,43,35,.08);text-align:center;border-top:3px solid #52b788}
+.mv{font-size:2.2rem;font-weight:700;color:#102B23;line-height:1}
+.ml{font-size:.75rem;color:#7a7a7a;margin-top:6px;text-transform:uppercase;letter-spacing:.05em}
+.ib{background:#d8f3dc;border-left:3px solid #52b788;padding:10px 14px;border-radius:4px;font-size:.85rem;color:#1a4235;font-style:italic;margin-bottom:16px}
 </style>
 """, unsafe_allow_html=True)
 
 
 @st.cache_resource
-def get_connection():
-    db_path = os.path.join(os.path.dirname(__file__), "..", "fri_worktest.duckdb")
-    return duckdb.connect(db_path, read_only=True)
+def get_con():
+    db = os.path.join(os.path.dirname(__file__), "..", "fri_worktest.duckdb")
+    return duckdb.connect(db, read_only=True)
 
 
 @st.cache_data(ttl=300)
-def run_query(sql):
-    con = get_connection()
-    return con.execute(sql).fetchdf()
+def run(sql):
+    return get_con().execute(sql).fetchdf()
 
 
-def load_all():
-    questions = run_query("""
-        SELECT q.question_id, q.question_text,
-            COUNT(DISTINCT f.forecaster_sk)  AS forecaster_count,
-            ROUND(MEDIAN(f.prediction), 1)   AS median_prediction,
-            ROUND(AVG(f.prediction), 1)      AS mean_prediction,
-            ROUND(STDDEV(f.prediction), 1)   AS stddev_prediction,
-            MIN(f.prediction)                AS min_prediction,
-            MAX(f.prediction)                AS max_prediction
-        FROM fct_forecasts f
-        JOIN dim_questions q ON f.question_sk = q.question_sk
-        GROUP BY q.question_id, q.question_text
-        ORDER BY q.question_id
-    """)
+def insight(text):
+    st.markdown(f'<div class="ib">{text}</div>', unsafe_allow_html=True)
 
-    comparison = run_query("""
-        WITH latest AS (
-            SELECT f.forecaster_sk, f.question_sk, f.prediction, d.forecaster_type,
-                ROW_NUMBER() OVER (
-                    PARTITION BY f.forecaster_sk, f.question_sk
-                    ORDER BY f.forecast_timestamp DESC
-                ) AS rn
-            FROM fct_forecasts f
-            JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
-        )
-        SELECT forecaster_type,
-            COUNT(DISTINCT forecaster_sk)  AS forecaster_count,
-            COUNT(*)                       AS total_forecasts,
-            ROUND(AVG(prediction), 1)      AS avg_prediction,
-            ROUND(MEDIAN(prediction), 1)   AS median_prediction,
-            ROUND(STDDEV(prediction), 1)   AS prediction_stddev
-        FROM latest WHERE rn = 1
-        GROUP BY forecaster_type
-        ORDER BY avg_prediction DESC
-    """)
 
-    revisions = run_query("""
-        WITH numbered AS (
-            SELECT d.forecaster_id, d.forecaster_name, d.forecaster_type,
-                q.question_id, q.question_text, f.prediction, f.forecast_timestamp,
-                ROW_NUMBER() OVER (
-                    PARTITION BY f.forecaster_sk, f.question_sk
-                    ORDER BY f.forecast_timestamp
-                ) AS update_number
-            FROM fct_forecasts f
-            JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
-            JOIN dim_questions q ON f.question_sk = q.question_sk
-        ),
-        with_max AS (
-            SELECT *, MAX(update_number) OVER (
-                PARTITION BY forecaster_id, question_id
-            ) AS max_update FROM numbered
-        )
-        SELECT forecaster_id, forecaster_name, forecaster_type,
-            question_id, question_text,
-            MIN(prediction) AS first_prediction,
-            MAX(CASE WHEN update_number = max_update THEN prediction END) AS last_prediction,
-            MAX(CASE WHEN update_number = max_update THEN prediction END)
-                - MIN(prediction) AS net_revision,
-            COUNT(*) AS total_submissions
-        FROM with_max
-        GROUP BY forecaster_id, forecaster_name, forecaster_type, question_id, question_text
-        HAVING COUNT(*) > 1
-        ORDER BY ABS(MAX(CASE WHEN update_number = max_update THEN prediction END) - MIN(prediction)) DESC
-    """)
+def metric_card(col, val, label):
+    col.markdown(
+        f'<div class="mc"><div class="mv">{val}</div><div class="ml">{label}</div></div>',
+        unsafe_allow_html=True
+    )
 
-    calibration = run_query("""
-        WITH latest AS (
-            SELECT f.forecaster_sk, f.question_sk, f.prediction, d.forecaster_type,
-                ROW_NUMBER() OVER (
-                    PARTITION BY f.forecaster_sk, f.question_sk
-                    ORDER BY f.forecast_timestamp DESC
-                ) AS rn
-            FROM fct_forecasts f
-            JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
-        )
-        SELECT q.question_id,
-            ROUND(AVG(CASE WHEN l.forecaster_type = 'superforecaster' THEN l.prediction END), 1) AS sf_avg,
-            ROUND(STDDEV(CASE WHEN l.forecaster_type = 'superforecaster' THEN l.prediction END), 1) AS sf_stddev,
-            ROUND(AVG(CASE WHEN l.forecaster_type = 'expert' THEN l.prediction END), 1) AS expert_avg,
-            ROUND(STDDEV(CASE WHEN l.forecaster_type = 'expert' THEN l.prediction END), 1) AS expert_stddev,
-            ROUND(AVG(CASE WHEN l.forecaster_type = 'public' THEN l.prediction END), 1) AS public_avg,
-            ROUND(STDDEV(CASE WHEN l.forecaster_type = 'public' THEN l.prediction END), 1) AS public_stddev
-        FROM latest l
-        JOIN dim_questions q ON l.question_sk = q.question_sk
-        WHERE l.rn = 1
-        GROUP BY q.question_id ORDER BY q.question_id
-    """)
 
-    engagement = run_query("""
-        SELECT d.forecaster_id, d.forecaster_name, d.forecaster_type,
-            d.years_forecasting_experience, d.education_level, d.country,
-            COUNT(DISTINCT f.question_sk)  AS questions_covered,
-            COUNT(*)                       AS total_submissions,
-            ROUND(AVG(f.prediction), 1)    AS avg_prediction,
-            MIN(f.prediction)              AS min_prediction,
-            MAX(f.prediction)              AS max_prediction
+questions = run("""
+    SELECT q.question_id, q.question_text,
+        COUNT(DISTINCT f.forecaster_sk) AS forecaster_count,
+        ROUND(MEDIAN(f.prediction),1) AS median_prediction,
+        ROUND(AVG(f.prediction),1) AS mean_prediction,
+        ROUND(STDDEV(f.prediction),1) AS stddev_prediction,
+        MIN(f.prediction) AS min_prediction,
+        MAX(f.prediction) AS max_prediction
+    FROM fct_forecasts f
+    JOIN dim_questions q ON f.question_sk = q.question_sk
+    GROUP BY q.question_id, q.question_text
+    ORDER BY q.question_id
+""")
+
+comparison = run("""
+    WITH latest AS (
+        SELECT f.forecaster_sk, f.question_sk, f.prediction, d.forecaster_type,
+            ROW_NUMBER() OVER (
+                PARTITION BY f.forecaster_sk, f.question_sk
+                ORDER BY f.forecast_timestamp DESC
+            ) AS rn
         FROM fct_forecasts f
         JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
-        GROUP BY d.forecaster_id, d.forecaster_name, d.forecaster_type,
-            d.years_forecasting_experience, d.education_level, d.country
-        ORDER BY total_submissions DESC
-    """)
+    )
+    SELECT forecaster_type,
+        COUNT(DISTINCT forecaster_sk) AS forecaster_count,
+        COUNT(*) AS total_forecasts,
+        ROUND(AVG(prediction),1) AS avg_prediction,
+        ROUND(MEDIAN(prediction),1) AS median_prediction,
+        ROUND(STDDEV(prediction),1) AS prediction_stddev
+    FROM latest WHERE rn = 1
+    GROUP BY forecaster_type
+    ORDER BY avg_prediction DESC
+""")
 
-    return questions, comparison, revisions, calibration, engagement
+revisions = run("""
+    WITH numbered AS (
+        SELECT d.forecaster_id, d.forecaster_name, d.forecaster_type,
+            q.question_id, f.prediction, f.forecast_timestamp,
+            ROW_NUMBER() OVER (
+                PARTITION BY f.forecaster_sk, f.question_sk
+                ORDER BY f.forecast_timestamp
+            ) AS rn
+        FROM fct_forecasts f
+        JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
+        JOIN dim_questions q ON f.question_sk = q.question_sk
+    ),
+    wm AS (
+        SELECT *, MAX(rn) OVER (PARTITION BY forecaster_id, question_id) AS max_rn
+        FROM numbered
+    )
+    SELECT forecaster_id, forecaster_name, forecaster_type, question_id,
+        MIN(prediction) AS first_prediction,
+        MAX(CASE WHEN rn = max_rn THEN prediction END) AS last_prediction,
+        MAX(CASE WHEN rn = max_rn THEN prediction END) - MIN(prediction) AS net_revision,
+        COUNT(*) AS total_submissions
+    FROM wm
+    GROUP BY forecaster_id, forecaster_name, forecaster_type, question_id
+    HAVING COUNT(*) > 1
+    ORDER BY ABS(MAX(CASE WHEN rn = max_rn THEN prediction END) - MIN(prediction)) DESC
+""")
 
+calibration = run("""
+    WITH latest AS (
+        SELECT f.forecaster_sk, f.question_sk, f.prediction, d.forecaster_type,
+            ROW_NUMBER() OVER (
+                PARTITION BY f.forecaster_sk, f.question_sk
+                ORDER BY f.forecast_timestamp DESC
+            ) AS rn
+        FROM fct_forecasts f
+        JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
+    )
+    SELECT q.question_id,
+        ROUND(AVG(CASE WHEN l.forecaster_type = 'superforecaster' THEN l.prediction END),1) AS sf_avg,
+        ROUND(STDDEV(CASE WHEN l.forecaster_type = 'superforecaster' THEN l.prediction END),1) AS sf_stddev,
+        ROUND(AVG(CASE WHEN l.forecaster_type = 'expert' THEN l.prediction END),1) AS expert_avg,
+        ROUND(STDDEV(CASE WHEN l.forecaster_type = 'expert' THEN l.prediction END),1) AS expert_stddev,
+        ROUND(AVG(CASE WHEN l.forecaster_type = 'public' THEN l.prediction END),1) AS public_avg,
+        ROUND(STDDEV(CASE WHEN l.forecaster_type = 'public' THEN l.prediction END),1) AS public_stddev
+    FROM latest l
+    JOIN dim_questions q ON l.question_sk = q.question_sk
+    WHERE l.rn = 1
+    GROUP BY q.question_id
+    ORDER BY q.question_id
+""")
+
+engagement = run("""
+    SELECT d.forecaster_id, d.forecaster_name, d.forecaster_type,
+        d.years_forecasting_experience, d.education_level, d.country,
+        COUNT(DISTINCT f.question_sk) AS questions_covered,
+        COUNT(*) AS total_submissions,
+        ROUND(AVG(f.prediction),1) AS avg_prediction
+    FROM fct_forecasts f
+    JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
+    GROUP BY d.forecaster_id, d.forecaster_name, d.forecaster_type,
+        d.years_forecasting_experience, d.education_level, d.country
+    ORDER BY total_submissions DESC
+""")
 
 with st.sidebar:
     st.markdown("## 🔭 FRI Platform")
     st.markdown("Forecasting Data Warehouse")
     st.markdown("---")
     page = st.radio("Navigate", [
-        "📊 Question Overview",
+        "📊 Questions",
         "👥 Forecaster Types",
         "🔄 Belief Revisions",
-        "🎯 Calibration Spread",
+        "🎯 Calibration",
         "📈 Engagement",
         "🗃️ Data Quality",
     ])
     st.markdown("---")
     st.markdown(
-        "<small>DuckDB · FastAPI · Streamlit<br>Dimensional model · 5 tables<br>89 forecasts · 10 forecasters</small>",
+        "<small>DuckDB · FastAPI · Streamlit<br>"
+        "5 tables · 89 forecasts · 10 forecasters</small>",
         unsafe_allow_html=True
     )
-
-questions, comparison, revisions, calibration, engagement = load_all()
 
 st.markdown("### FRI Forecasting Data Platform")
-st.markdown("<p style=\'color:#7a7a7a;font-size:0.85rem;margin-bottom:24px\'>Dimensional warehouse analytics over AI forecasting survey data</p>", unsafe_allow_html=True)
+st.markdown(
+    "<p style='color:#7a7a7a;font-size:.85rem;margin-bottom:24px'>"
+    "Dimensional warehouse analytics over AI forecasting survey data</p>",
+    unsafe_allow_html=True
+)
 
 c1, c2, c3, c4, c5 = st.columns(5)
-overall_median = round(questions["median_prediction"].mean(), 1)
-total_subs = engagement["total_submissions"].sum()
-
-for col, val, label in [
-    (c1, len(questions), "Questions"),
-    (c2, len(engagement), "Forecasters"),
-    (c3, int(total_subs), "Submissions"),
-    (c4, f"{overall_median}%", "Overall Median"),
-    (c5, len(revisions), "Belief Updates"),
-]:
-    col.markdown(
-        f'<div class="metric-card"><div class="metric-value">{val}</div><div class="metric-label">{label}</div></div>',
-        unsafe_allow_html=True
-    )
-
+overall_median = round(float(questions["median_prediction"].mean()), 1)
+total_subs = int(engagement["total_submissions"].sum())
+metric_card(c1, len(questions), "Questions")
+metric_card(c2, len(engagement), "Forecasters")
+metric_card(c3, total_subs, "Submissions")
+metric_card(c4, f"{overall_median}%", "Overall Median")
+metric_card(c5, len(revisions), "Belief Updates")
 st.markdown("<br>", unsafe_allow_html=True)
 
-if page == "📊 Question Overview":
-    st.markdown('<div class="section-title">Predicted Probability by Question</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Median prediction across all forecaster types. Error bars show min/max range.</div>', unsafe_allow_html=True)
-
+if page == "📊 Questions":
+    st.markdown("#### Predicted Probability by Question")
     lowest = questions.loc[questions["median_prediction"].idxmin()]
     highest = questions.loc[questions["median_prediction"].idxmax()]
-
-    st.markdown(
-        f'<div class="insight-box">Forecasters are most confident about <b>{highest["question_id"]}</b> ' +
-        f'(compute scaling, {highest["median_prediction"]}% median) and least confident about ' +
-        f'<b>{lowest["question_id"]}</b> (voluntary AI pause, {lowest["median_prediction"]}% median). ' +
-        f'Spread: {highest["median_prediction"] - lowest["median_prediction"]} percentage points.</div>',
-        unsafe_allow_html=True
+    insight(
+        f"Most confident: <b>{highest['question_id']}</b> compute scaling at "
+        f"{highest['median_prediction']}%. Least confident: <b>{lowest['question_id']}</b> "
+        f"voluntary pause at {lowest['median_prediction']}%. "
+        f"Spread: {highest['median_prediction'] - lowest['median_prediction']} percentage points."
     )
+    questions["label"] = (
+        questions["question_id"] + ": " + questions["question_text"].str[:55] + "..."
+    )
+    fig = go.Figure(go.Bar(
+        y=questions["label"],
+        x=questions["median_prediction"],
+        orientation="h",
+        marker=dict(
+            color=questions["median_prediction"],
+            colorscale=[[0, RED], [0.3, AMBER], [0.6, G4], [1, G1]],
+            showscale=True,
+            colorbar=dict(title="Median %", thickness=12),
+        ),
+        error_x=dict(
+            type="data", symmetric=False,
+            array=questions["max_prediction"] - questions["median_prediction"],
+            arrayminus=questions["median_prediction"] - questions["min_prediction"],
+            color="#aaa", thickness=1.5,
+        ),
+        text=questions["median_prediction"].astype(str) + "%",
+        textposition="outside",
+    ))
+    fig.update_layout(
+        height=460,
+        margin=dict(l=20, r=60, t=20, b=20),
+        xaxis=dict(title="Predicted Probability (%)", range=[0, 115]),
+        yaxis=dict(autorange="reversed"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    d = questions[[
+        "question_id", "question_text", "forecaster_count",
+        "median_prediction", "mean_prediction", "stddev_prediction",
+        "min_prediction", "max_prediction"
+    ]].copy()
+    d.columns = ["ID", "Question", "Forecasters", "Median %", "Mean %", "Std Dev", "Min %", "Max %"]
+    st.dataframe(d, use_container_width=True, hide_index=True)
 
-    questions["short_text"] = questions["question_id"] + ": " + questions["question_text"].str[:55] + "..."
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        y=questions["short_text"],
-        x=questions["median_p thickness=2, width=8),
+elif page == "👥 Forecaster Types":
+    st.markdown("#### Superforecasters vs Experts vs Public")
+    sf = comparison[comparison["forecaster_type"] == "superforecaster"].iloc[0]
+    pub = comparison[comparison["forecaster_type"] == "public"].iloc[0]
+    insight(
+        f"Superforecasters show sigma {sf['prediction_stddev']} vs public at sigma "
+        f"{pub['prediction_stddev']}. Higher variance among superforecasters reflects "
+        f"more decisive positions away from 50%, consistent with Tetlock's findings."
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        fig = go.Figure()
+        for _, row in comparison.iterrows():
+            fig.add_trace(go.Bar(
+                name=row["forecaster_type"],
+                x=[row["forecaster_type"]],
+                y=[row["avg_prediction"]],
+                marker_color=TC.get(row["forecaster_type"], G4),
+                error_y=dict(
+                    type="data", array=[row["prediction_stddev"]],
+                    visible=True, color="#666", thickness=2, width=8
+                ),
                 text=[f"{row['avg_prediction']}%"],
                 textposition="outside",
             ))
-        fig_bar.update_layout(
-            title="Average Prediction +- Std Dev",
-            yaxis=dict(title="Avg Predicted Probability (%)", range=[0, 75]),
-            plot_bgcolor="white", paper_bgcolor="white", showlegend=False, height=360,
+        fig.update_layout(
+            title="Average Prediction +/- Std Dev",
+            yaxis=dict(range=[0, 75]),
+            plot_bgcolor="white", paper_bgcolor="white",
+            showlegend=False, height=360,
             margin=dict(l=20, r=20, t=40, b=20),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
+        st.plotly_chart(fig, use_container_width=True)
     with col2:
-        raw = run_query("""
+        raw = run("""
             WITH latest AS (
                 SELECT f.prediction, d.forecaster_type,
-                    ROW_NUMBER() OVER (PARTITION BY f.forecaster_sk, f.question_sk ORDER BY f.forecast_timestamp DESC) AS rn
-                FROM fct_forecasts f JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
+                    ROW_NUMBER() OVER (
+                        PARTITION BY f.forecaster_sk, f.question_sk
+                        ORDER BY f.forecast_timestamp DESC
+                    ) AS rn
+                FROM fct_forecasts f
+                JOIN dim_forecasters d ON f.forecaster_sk = d.forecaster_sk
             )
             SELECT prediction, forecaster_type FROM latest WHERE rn = 1
         """)
-        fig_box = go.Figure()
-        for ftype, color in TYPE_COLORS.items():
-            subset = raw[raw["forecaster_type"] == ftype]["prediction"]
-            fig_box.add_trace(go.Box(y=subset, name=ftype, marker_color=color, boxmean=True))
-        fig_box.update_layout(
-            title="Prediction Distribution by Type",
-            yaxis=dict(title="Predicted Probability (%)"),
-            plot_bgcolor="white", paper_bgcolor="white", height=360, showlegend=False,
+        fig2 = go.Figure()
+        for ft, color in TC.items():
+            fig2.add_trace(go.Box(
+                y=raw[raw["forecaster_type"] == ft]["prediction"],
+                name=ft, marker_color=color, boxmean=True
+            ))
+        fig2.update_layout(
+            title="Prediction Distribution",
+            plot_bgcolor="white", paper_bgcolor="white",
+            height=360, showlegend=False,
             margin=dict(l=20, r=20, t=40, b=20),
         )
-        st.plotly_chart(fig_box, use_container_width=True)
-
-    display = comparison.copy()
-    display.columns = ["Type", "Forecasters", "Total Forecasts", "Avg %", "Median %", "Std Dev"]
-    st.dataframe(display, use_container_width=True, hide_index=True)
+        st.plotly_chart(fig2, use_container_width=True)
+    d = comparison.copy()
+    d.columns = ["Type", "Forecasters", "Total Forecasts", "Avg %", "Median %", "Std Dev"]
+    st.dataframe(d, use_container_width=True, hide_index=True)
 
 elif page == "🔄 Belief Revisions":
-    st.markdown('<div class="section-title">Belief Revision Analysis</div>', unsafe_allow_html=True)
-
-    up_count = len(revisions[revisions["net_revision"] > 0])
+    st.markdown("#### Belief Revision Analysis")
+    up = len(revisions[revisions["net_revision"] > 0])
     max_rev = int(revisions["net_revision"].abs().max())
-
-    st.markdown(
-        f'<div class="insight-box">{up_count} of {len(revisions)} revisions went upward. ' +
-        f'Largest single revision: {max_rev} percentage points. ' +
-        f'All forecasters who updated moved toward higher AI capability probabilities.</div>',
-        unsafe_allow_html=True
+    insight(
+        f"{up} of {len(revisions)} revisions went upward. "
+        f"All forecasters who updated moved toward higher AI capability probabilities. "
+        f"Largest single revision: {max_rev} percentage points."
     )
-
     col1, col2 = st.columns(2)
     with col1:
-        fig_scatter = go.Figure()
-        for ftype, color in TYPE_COLORS.items():
-            subset = revisions[revisions["forecaster_type"] == ftype]
-            if len(subset) == 0:
+        fig = go.Figure()
+        for ft, color in TC.items():
+            sub = revisions[revisions["forecaster_type"] == ft]
+            if len(sub) == 0:
                 continue
-            fig_scatter.add_trace(go.Scatter(
-                x=subset["first_prediction"], y=subset["last_prediction"],
-                mode="markers+text", name=ftype, marker=dict(color=color, size=10),
-                text=subset["forecaster_name"].str.split().str[0],
+            fig.add_trace(go.Scatter(
+                x=sub["first_prediction"], y=sub["last_prediction"],
+                mode="markers+text", name=ft,
+                marker=dict(color=color, size=10),
+                text=sub["forecaster_name"].str.split().str[0],
                 textposition="top center", textfont=dict(size=9),
             ))
-        fig_scatter.add_shape(type="line", x0=0, y0=0, x1=100, y1=100, line=dict(color="#ccc", dash="dash", width=1))
-        fig_scatter.update_layout(
+        fig.add_shape(
+            type="line", x0=0, y0=0, x1=100, y1=100,
+            line=dict(color="#ccc", dash="dash", width=1)
+        )
+        fig.update_layout(
             title="First vs Last Prediction",
-            xaxis=dict(title="First Prediction (%)", range=[0, 100]),
-            yaxis=dict(title="Last Prediction (%)", range=[0, 100]),
-            plot_bgcolor="white", paper_bgcolor="white", height=380,
-            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis=dict(title="First (%)", range=[0, 100]),
+            yaxis=dict(title="Last (%)", range=[0, 100]),
+            plot_bgcolor="white", paper_bgcolor="white",
+            height=380, margin=dict(l=20, r=20, t=40, b=20),
         )
-        st.plotly_chart(fig_scatter, use_container_width=True)
-
+        st.plotly_chart(fig, use_container_width=True)
     with col2:
-        rev_sorted = revisions.copy()
-        rev_sorted["label"] = rev_sorted["forecaster_name"].str.split().str[0] + " / " + rev_sorted["question_id"]
-        rev_sorted["color"] = rev_sorted["net_revision"].apply(lambda x: GREEN_LIGHT if x > 0 else RED_SOFT if x < 0 else "#ccc")
-        fig_rev = go.Figure(go.Bar(
-            x=rev_sorted["net_revision"], y=rev_sorted["label"],
-            orientation="h", marker_color=rev_sorted["color"],
-        ))
-        fig_rev.add_vline(x=0, line_color="#333", line_width=1)
-        fig_rev.update_layout(
-            title="Net Revision (First to Last)",
-            xaxis=dict(title="Percentage Points"),
-            plot_bgcolor="white", paper_bgcolor="white", height=380,
-            margin=dict(l=20, r=20, t=40, b=20),
+        rev = revisions.copy()
+        rev["label"] = (
+            rev["forecaster_name"].str.split().str[0] + " / " + rev["question_id"]
         )
-        st.plotly_chart(fig_rev, use_container_width=True)
+        rev["color"] = rev["net_revision"].apply(
+            lambda x: G3 if x > 0 else RED if x < 0 else "#ccc"
+        )
+        fig2 = go.Figure(go.Bar(
+            x=rev["net_revision"], y=rev["label"],
+            orientation="h", marker_color=rev["color"],
+        ))
+        fig2.add_vline(x=0, line_color="#333", line_width=1)
+        fig2.update_layout(
+            title="Net Revision First to Last",
+            xaxis=dict(title="Percentage Points"),
+            plot_bgcolor="white", paper_bgcolor="white",
+            height=380, margin=dict(l=20, r=20, t=40, b=20),
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    d = revisions[[
+        "forecaster_name", "forecaster_type", "question_id",
+        "first_prediction", "last_prediction", "net_revision", "total_submissions"
+    ]].copy()
+    d.columns = ["Forecaster", "Type", "Question", "First %", "Last %", "Net Change", "Submissions"]
+    st.dataframe(d, use_container_width=True, hide_index=True)
 
-    display = revisions[["forecaster_name", "forecaster_type", "question_id",
-                         "first_prediction", "last_prediction", "net_revision", "total_submissions"]].copy()
-    display.columns = ["Forecaster", "Type", "Question", "First %", "Last %", "Net Change", "Submissions"]
-    st.dataframe(display, use_container_width=True, hide_index=True)
-
-elif page == "🎯 Calibration Spread":
-    st.markdown('<div class="section-title">Calibration Spread by Forecaster Type</div>', unsafe_allow_html=True)
-
-    sf_avg_std = calibration["sf_stddev"].mean()
-    pub_avg_std = calibration["public_stddev"].mean()
-    tetlock = sf_avg_std < pub_avg_std
-
-    st.markdown(
-        f'<div class="insight-box">Superforecasters avg σ: {sf_avg_std:.1f} vs public avg σ: {pub_avg_std:.1f}. ' +
-        (f'Confirms Tetlock calibration hypothesis on this dataset.' if tetlock else f'Does not confirm hypothesis, likely due to small sample size.') +
-        '</div>',
-        unsafe_allow_html=True
+elif page == "🎯 Calibration":
+    st.markdown("#### Calibration Spread by Forecaster Type")
+    sf_std = float(calibration["sf_stddev"].mean())
+    pub_std = float(calibration["public_stddev"].mean())
+    confirmed = sf_std < pub_std
+    insight(
+        f"Superforecasters avg sigma: {sf_std:.1f} vs public avg sigma: {pub_std:.1f}. "
+        + ("Confirms Tetlock calibration hypothesis on this dataset."
+           if confirmed else
+           "Does not confirm hypothesis, likely due to small sample size (3 superforecasters vs 4 public).")
     )
-
     rows = []
     for _, r in calibration.iterrows():
-        for ftype, avg_col, std_col in [("superforecaster","sf_avg","sf_stddev"),("expert","expert_avg","expert_stddev"),("public","public_avg","public_stddev")]:
-            rows.append({"question": r["question_id"], "type": ftype, "avg": r[avg_col], "stddev": r[std_col]})
-    calib_long = pd.DataFrame(rows)
-
-    fig = px.bar(calib_long, x="question", y="stddev", color="type", barmode="group",
-                 color_discrete_map=TYPE_COLORS,
-                 labels={"stddev": "Standard Deviation", "question": "Question", "type": "Type"},
-                 title="Prediction Spread per Question by Forecaster Type")
-    fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", height=400,
-                      margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", y=1.12))
+        for ft, ac, sc in [
+            ("superforecaster", "sf_avg", "sf_stddev"),
+            ("expert", "expert_avg", "expert_stddev"),
+            ("public", "public_avg", "public_stddev"),
+        ]:
+            rows.append({"question": r["question_id"], "type": ft, "avg": r[ac], "stddev": r[sc]})
+    cl = pd.DataFrame(rows)
+    fig = px.bar(
+        cl, x="question", y="stddev", color="type", barmode="group",
+        color_discrete_map=TC,
+        labels={"stddev": "Std Dev", "question": "Question", "type": "Type"},
+        title="Prediction Spread per Question by Forecaster Type",
+    )
+    fig.update_layout(
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=400, margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h", y=1.12),
+    )
     st.plotly_chart(fig, use_container_width=True)
-
-    display = calibration.copy()
-    display.columns = ["Question", "SF Avg", "SF sigma", "Expert Avg", "Expert sigma", "Public Avg", "Public sigma"]
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    d = calibration.copy()
+    d.columns = ["Question", "SF Avg", "SF sigma", "Expert Avg", "Expert sigma", "Public Avg", "Public sigma"]
+    st.dataframe(d, use_container_width=True, hide_index=True)
 
 elif page == "📈 Engagement":
-    st.markdown('<div class="section-title">Forecaster Engagement</div>', unsafe_allow_html=True)
-
-    most_active = engagement.iloc[0]
-    st.markdown(
-        f'<div class="insight-box">{most_active["forecaster_name"]} ({most_active["forecaster_type"]}) leads with ' +
-        f'{most_active["total_submissions"]} submissions across {most_active["questions_covered"]} questions.</div>',
-        unsafe_allow_html=True
+    st.markdown("#### Forecaster Engagement")
+    top = engagement.iloc[0]
+    insight(
+        f"{top['forecaster_name']} ({top['forecaster_type']}) leads with "
+        f"{top['total_submissions']} submissions across {top['questions_covered']} questions. "
+        f"F099 (registered but never forecasted) correctly excluded via the fct_forecasts join."
     )
-
     col1, col2 = st.columns(2)
     with col1:
-        fig_eng = px.bar(engagement, x="total_submissions", y="forecaster_name",
-                        color="forecaster_type", orientation="h", color_discrete_map=TYPE_COLORS,
-                        labels={"total_submissions": "Total Submissions", "forecaster_name": "", "forecaster_type": "Type"},
-                        title="Total Submissions per Forecaster")
-        fig_eng.update_layout(plot_bgcolor="white", paper_bgcolor="white", height=380,
-                             margin=dict(l=20, r=20, t=40, b=20), yaxis=dict(autorange="reversed"),
-                             legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig_eng, use_container_width=True)
-
+        fig = px.bar(
+            engagement, x="total_submissions", y="forecaster_name",
+            color="forecaster_type", orientation="h", color_discrete_map=TC,
+            labels={
+                "total_submissions": "Submissions",
+                "forecaster_name": "",
+                "forecaster_type": "Type",
+            },
+            title="Total Submissions per Forecaster",
+        )
+        fig.update_layout(
+            plot_bgcolor="white", paper_bgcolor="white",
+            height=380, margin=dict(l=20, r=20, t=40, b=20),
+            yaxis=dict(autorange="reversed"),
+            legend=dict(orientation="h", y=1.1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
     with col2:
-        fig_exp t_size=9)
-        fig_exp.update_layout(plot_bgcolor="white", paper_bgcolor="white", height=380,
-                             margin=dict(l=20, r=20, t=40, b=20), showlegend=False)
-        st.plotly_chart(fig_exp, use_container_width=True)
-
-    display = engagement[["forecaster_name","forecaster_type","years_forecasting_experience",
-                          "education_level","country","questions_covered","total_submissions","avg_prediction"]].copy()
-    display.columns = ["Name","Type","Exp (yrs)","Education","Country","Questions","Submissions","Avg %"]
-    st.dataframe(display, use_container_width=True, hide_index=True)
+        fig2 = px.scatter(
+            engagement, x="years_forecasting_experience", y="avg_prediction",
+            color="forecaster_type", size="total_submissions", text="forecaster_name",
+            color_discrete_map=TC,
+            labels={
+                "years_forecasting_experience": "Years Experience",
+                "avg_prediction": "Avg Prediction (%)",
+            },
+            title="Experience vs Average Prediction",
+        )
+        fig2.update_traces(textposition="top center", textfont_size=9)
+        fig2.update_layout(
+            plot_bgcolor="white", paper_bgcolor="white",
+            height=380, margin=dict(l=20, r=20, t=40, b=20),
+            showlegend=False,
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    d = engagement[[
+        "forecaster_name", "forecaster_type", "years_forecasting_experience",
+        "education_level", "country", "questions_covered", "total_submissions", "avg_prediction"
+    ]].copy()
+    d.columns = ["Name", "Type", "Exp", "Education", "Country", "Questions", "Submissions", "Avg %"]
+    st.dataframe(d, use_container_width=True, hide_index=True)
 
 elif page == "🗃️ Data Quality":
-    st.markdown('<div class="section-title">Data Quality Report</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="insight-box">8 issues found across 3 raw tables. All resolved before loading into the dimensional model. ' +
-        'Cleaned warehouse: 89 fact rows (down from 90), 19 unique tags (down from 20).</div>',
-        unsafe_allow_html=True
+    st.markdown("#### Data Quality Report")
+    insight(
+        "8 issues found across 3 raw tables. All resolved before loading into the dimensional model. "
+        "89 fact rows after dedup (down from 90), 19 tags after normalisation (down from 20)."
     )
-
     issues = [
-        ("High",   "raw_forecasts_export",        "All columns",                "Exact duplicate row (F005, Q002)",              "ROW_NUMBER() dedup in fct_forecasts CTE"),
-        ("Low",    "raw_forecasts_export",        "rationale",                  "3 empty strings instead of NULL",               "NULLIF(TRIM(rationale), \'\') in fct_forecasts"),
-        ("High",   "raw_forecaster_demographics", "joined_date",                "F006 uses prose date March 15 2023",            "COALESCE(TRY_CAST, TRY_STRPTIME) in dim_forecasters"),
-        ("Medium", "raw_forecaster_demographics", "education_level",            "Bachelor vs Bachelors inconsistency",           "CASE normalisation in dim_forecasters"),
-        ("Medium", "raw_forecaster_demographics", "education_level/affiliation","F007 has NULL education and affiliation",        "Kept as NULL, has_complete_profile flag added"),
-        ("Medium", "raw_forecaster_demographics", "forecaster_id",              "F099 in demographics but 0 forecasts",          "Kept in dim_forecasters, is_active = FALSE"),
-        ("High",   "raw_question_tags",           "tag",                        "Q003 tag mixed case Artificial-Intelligence",   "LOWER(TRIM(tag)) in bridge_question_tags"),
-        ("High",   "raw_question_tags",           "question_id + tag",          "Q001 artificial-intelligence duplicated",       "DISTINCT after lowercasing in bridge"),
+        ("High",   "raw_forecasts_export",        "All columns",        "Exact duplicate row F005 Q002",          "ROW_NUMBER() dedup in fct_forecasts CTE"),
+        ("Low",    "raw_forecasts_export",        "rationale",          "3 empty strings instead of NULL",        "NULLIF(TRIM(rationale), empty) in fct_forecasts"),
+        ("High",   "raw_forecaster_demographics", "joined_date",        "F006 prose date March 15 2023",          "COALESCE(TRY_CAST, TRY_STRPTIME) in dim_forecasters"),
+        ("Medium", "raw_forecaster_demographics", "education_level",    "Bachelor vs Bachelors inconsistency",    "CASE normalisation in dim_forecasters"),
+        ("Medium", "raw_forecaster_demographics", "education/affil",    "F007 NULL education and affiliation",    "Kept as NULL, has_complete_profile flag added"),
+        ("Medium", "raw_forecaster_demographics", "forecaster_id",      "F099 zero forecasts",                    "Kept in dim_forecasters, is_active = FALSE"),
+        ("High",   "raw_question_tags",           "tag",                "Q003 mixed case Artificial-Intelligence","LOWER(TRIM(tag)) in bridge_question_tags"),
+        ("High",   "raw_question_tags",           "question_id + tag",  "Q001 tag duplicated",                    "DISTINCT after lowercasing in bridge"),
     ]
+    df = pd.DataFrame(issues, columns=["Severity", "Table", "Column", "Issue", "Resolution"])
 
-    df_issues = pd.DataFrame(issues, columns=["Severity","Table","Column(s)","Issue","Resolution"])
+    def color_sev(val):
+        if val == "High":   return "background-color:#fde8e8;color:#c62828"
+        if val == "Medium": return "background-color:#fff3e0;color:#e65100"
+        return "background-color:#e8f5e9;color:#2e7d32"
 
-    def color_severity(val):
-        if val == "High":   return "background-color: #fde8e8; color: #c62828"
-        if val == "Medium": return "background-color: #fff3e0; color: #e65100"
-        return "background-color: #e8f5e9; color: #2e7d32"
-
-    styled = df_issues.style.map(color_severity, subset=["Severity"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
+    st.dataframe(
+        df.style.map(color_sev, subset=["Severity"]),
+        use_container_width=True, hide_index=True
+    )
     st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    raw_counts  = run_query("SELECT COUNT(*) AS raw_rows FROM raw_forecasts_export")
-    clean_counts = run_query("SELECT COUNT(*) AS fact_rows FROM fct_forecasts")
-    tag_counts  = run_query("SELECT COUNT(*) AS raw_tags FROM raw_question_tags")
-    clean_tags  = run_query("SELECT COUNT(*) AS clean_tags FROM bridge_question_tags")
-
-    col1.metric("Raw forecast rows", int(raw_counts["raw_rows"].iloc[0]))
-    col1.metric("After dedup",       int(clean_counts["fact_rows"].iloc[0]), delta="-1 duplicate")
-    col2.metric("Raw tag rows",      int(tag_counts["raw_tags"].iloc[0]))
-    col2.metric("After normalise",   int(clean_tags["clean_tags"].iloc[0]), delta="-1 duplicate")
-    col3.metric("Issues found", 8)
-    col3.metric("Issues resolved", 8, delta="100%")
+    c1, c2, c3 = st.columns(3)
+    raw_r  = run("SELECT COUNT(*) AS n FROM raw_forecasts_export")
+    clean_r = run("SELECT COUNT(*) AS n FROM fct_forecasts")
+    raw_t  = run("SELECT COUNT(*) AS n FROM raw_question_tags")
+    clean_t = run("SELECT COUNT(*) AS n FROM bridge_question_tags")
+    c1.metric("Raw forecast rows",  int(raw_r["n"].iloc[0]))
+    c1.metric("After dedup",        int(clean_r["n"].iloc[0]), delta="-1 duplicate")
+    c2.metric("Raw tag rows",       int(raw_t["n"].iloc[0]))
+    c2.metric("After normalise",    int(clean_t["n"].iloc[0]), delta="-1 duplicate")
+    c3.metric("Issues found",    8)
+    c3.metric("Issues resolved", 8, delta="100%")
