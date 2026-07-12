@@ -61,7 +61,7 @@
 **Affected:** `raw_forecaster_demographics.forecaster_id` — F099  
 **What it is:** F099 appears in demographics with a full profile (Bachelors, Canada, Unicorn College) but has zero rows in raw_forecasts_export. This forecaster registered and completed their profile but never submitted a forecast.  
 **Why it matters:** F099 will appear in dim_forecasters but never in fct_forecasts. Any JOIN from facts to dims will correctly exclude them. However an analysis counting registered vs active forecasters would need to account for this.  
-**Resolution:** Keep F099 in dim_forecasters. Add an is_active boolean derived from whether a forecaster has at least one forecast row.
+**Resolution:** Keep F099 in dim_forecasters with is_active = FALSE. Pull forecaster_id from the demographics table rather than the forecasts side of the LEFT JOIN, so F099 retains its ID even with zero forecast rows. The name and type columns are correctly NULL since those only exist in the forecasts feed.
 
 ---
 

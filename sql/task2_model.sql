@@ -48,9 +48,9 @@ WITH base AS (
     -- clean here but being explicit costs nothing and prevents silent issues
     -- if the source ever sends duplicates
     SELECT DISTINCT
-        f.forecaster_id,
-        f.forecaster_name,
-        f.forecaster_type,
+        d.forecaster_id, -- pull from demographics not forecasts so F099 retains its ID despite having zero forecast rows
+        MAX(f.forecaster_name) OVER (PARTITION BY d.forecaster_id) AS forecaster_name,
+        MAX(f.forecaster_type) OVER (PARTITION BY d.forecaster_id) AS forecaster_type,
 
         -- normalise education_level to a controlled vocabulary
         -- Bachelor and Bachelors mean the same thing, the source had a
@@ -78,7 +78,7 @@ WITH base AS (
         CASE
             WHEN EXISTS (
                 SELECT 1 FROM raw_forecasts_export fe
-                WHERE fe.forecaster_id = f.forecaster_id
+                WHERE fe.forecaster_id = d.forecaster_id
             ) THEN TRUE
             ELSE FALSE
         END AS is_active,
